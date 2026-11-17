@@ -1,0 +1,28 @@
+---
+description: Never change weight tables unless the user explicitly asks
+alwaysApply: true
+---
+
+# No weight-table edits unless asked
+
+Do **not** change math weight tables unless the user explicitly asks for that edit.
+
+## What counts as a weight table
+
+Treat these as off-limits without an explicit request:
+
+- Reelset pick weights (`reelsetW`, mode packs, Good/mid/Bad / BadRespin bands)
+- Per-cell / per-column symbol weights inside reelsets or strips
+- Wild-mult tables (`stickyMultWByRow`, `normalMultWByRow`, land-mult weights)
+- Scatter / feature odds (`pScat`, `pScatBad`, `stickyShare`, `bunnyConvert`, stack tables, buy/ante costs used as pack weights)
+- Any JSON / HTML / C++ table that only exists to retune RTP or hit rates
+
+## Allowed without an ask
+
+- Reading / documenting / diffing weight tables
+- Sanity checks that assert structure (non-negative weights, referenced reelset ids exist, symbols in the symbol list)
+- Engine / rule / UI / docs changes that do **not** alter table numbers
+
+## If weights look wrong
+
+Flag the issue and wait for an explicit request before changing values. Prefer quoting the current cells and the proposed change rather than silently retuning.

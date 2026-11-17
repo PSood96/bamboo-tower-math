@@ -1,0 +1,12 @@
+.DS_Store
+*.o
+*.out
+a.out
+cpp/a.out
+cpp/bamboo-tower
+cpp/test_bamboo_tower
+cpp/results/
+**/__pycache__/
+*.pyc
+.vscode/
+.idea/

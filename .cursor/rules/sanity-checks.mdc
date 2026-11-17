@@ -1,0 +1,31 @@
+---
+description: Keep wild-descent-style regular sanity checks; run them after math edits
+alwaysApply: true
+---
+
+# Regular sanity checks (wild-descent shape)
+
+Mirror the wild-descent math pack: a lightweight C++ assert harness plus a one-command runner. Keep checks green as the game grows.
+
+## What to maintain
+
+- `cpp/test_bamboo_tower.cpp` — plain `CHECK` asserts (no GoogleTest), same shape as wild-descent’s `test_wild_descent.cpp`
+- `scripts/run_sanity_checks.sh` — compile + run the harness
+- Config / symbol / reelset structure checks even before full game rules exist
+
+## Minimum check categories
+
+1. **Symbol list hygiene** — every reelset / strip / landable weight token ∈ paytable keys ∪ engine specials (`WW`, `CN`, `CL`, `RP`, `MU`, `HT`, `BL`, …)
+2. **Weight structure** — referenced reelset ids exist; weights are finite and ≥ 0; empty packs stay intentionally empty until authored
+3. **Paytable / award maps** — known oaks pay; invalid oaks return 0; feature symbols are not pay symbols
+4. **Engine invariants** — as rules land, add focused unit tests (line eval, Coin Respin, Cash-Fall tower / collector / heart cases)
+
+## When to run
+
+After any edit to `cpp/config.hpp`, reelsets, strips, paytable, or award maps:
+
+```bash
+./scripts/run_sanity_checks.sh
+```
+
+Do not claim the math is clean if the harness fails or was skipped after strip/config edits.

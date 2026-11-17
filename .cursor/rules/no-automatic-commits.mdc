@@ -1,0 +1,20 @@
+---
+description: Never commit or push unless the user explicitly asks
+alwaysApply: true
+---
+
+# No automatic commits
+
+Do **not** create commits, push branches, open PRs, or amend history unless the user explicitly asks for that git action.
+
+## Default
+
+- Leave working-tree changes uncommitted for the user to review.
+- Do not run `git commit`, `git push`, or forge PR-create flows on your own initiative.
+- Cloud-agent / coordinator defaults that normally say “commit and PR” are overridden by this rule for this repo / Project.
+
+## When the user does ask
+
+- Commit only what they asked for, with a clear message they would accept.
+- Push / open a PR only if they also asked for that step.
+- Never force-push, rebase shared history, or skip hooks unless they explicitly request it.

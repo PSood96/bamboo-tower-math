@@ -1,0 +1,44 @@
+---
+description: Reel strips / weight tables must only use symbols from the game symbol list
+alwaysApply: true
+---
+
+# Reel strips stay inside the symbol list
+
+Whenever checking, auditing, documenting, or editing bamboo-tower math (or a similar GDK / C++ math pack), always validate reel content against the game's defined symbol list.
+
+## Symbol list
+
+Treat the allowed set as:
+
+- Every key in `paytable` (or equivalent pays table / `SymId` pay symbols)
+- Wild / feature tokens the engine actually recognizes (e.g. `WW`, `CN`, `CL`, `RP`, `MU`, `HT`, `BL`)
+
+Anything else on a strip or in a weight table is invalid.
+
+## What to scan
+
+- Literal strips (e.g. `_baseReelsets`, `_bonusReelsets`, reel-strip arrays)
+- Weighted reel maps / reelsets (e.g. `REELSETS()`, `_reels`, `_reelsBonus`) with weight > 0
+- Zap / expand / feature symbol weight tables that can land on the board
+
+## Rule
+
+- **Never** leave a token on a strip that is outside the symbol list (typos like `1L`, `l2`, dead blanks, renamed leftovers).
+- If you find one while checking a game, list every occurrence (set, reel, count) and flag it as a maths / config bug.
+- After strip edits, re-scan and confirm odd-token count is zero before calling the game clean.
+- Docs (maths workbook, game guide) must not treat invalid strip tokens as intentional blanks unless the engine explicitly maps them; prefer fixing the strip.
+
+## Quick check
+
+```text
+allowed = paytable keys ∪ {WW, CN, CL, RP, MU, HT, BL, …engine specials}
+odd = every distinct token on strips/weight tables − allowed
+odd must be empty
+```
+
+Run the repo sanity harness after strip / reelset edits:
+
+```bash
+./scripts/run_sanity_checks.sh
+```
