@@ -178,6 +178,9 @@ static void test_config_defaults() {
   CHECK(cfg.heldBonusTrigger == 6, "held trigger 6");
   CHECK(cfg.baseRespinStart == 3, "base respin start 3");
   CHECK(cfg.bonusReelSpins == 3, "bonus reel spins 3");
+  CHECK(cfg.pCollectorLand == 0.0, "default pCollectorLand off");
+  CHECK(cfg.coinCountW[0] == 1.0, "default coin count mass on 0");
+  CHECK(cfg.coinValueMin == 1 && cfg.coinValueMax == 100, "default coin cash 1–100");
   CHECK(modeName(SimMode::Main) == std::string("main"), "modeName main");
   CHECK(modeName(SimMode::Respin) == std::string("respin"), "modeName respin");
   CHECK(modeName(SimMode::CashFall) == std::string("cashfall"), "modeName cashfall");
@@ -213,6 +216,11 @@ static void test_coin_mult_tables() {
   for (int v : MULT_VALUES())
     if (v == mv) found = true;
   CHECK(found, "pickMultValue returns a table entry");
+  for (int i = 0; i < 50; ++i) {
+    const int cash = pickBoardCoinCashValue(rng, 1, 100);
+    CHECK(cash >= 1 && cash <= 100, "board coin cash in [1,100]");
+  }
+  CHECK(pickCoinCount(rng, defaultCoinCountW()) == 0, "default coinCountW → 0");
 }
 
 // -----------------------------------------------------------------------------
@@ -293,14 +301,179 @@ static void test_cashfall_stub_zero() {
   CHECK(f.boardX == 0.0 && f.steps == 0, "Cash-Fall stub returns zero");
 }
 
-static void test_play_base_round_stub() {
+static void test_play_base_round_default_knobs() {
   Rng rng(1);
   Config cfg = Config::defaults();
   Stats st{};
   RoundResult res = playBaseRound(rng, cfg, st);
-  // Empty packs → EM board → no line wins
-  CHECK(res.lineWin == 0.0, "blank packs → no line win");
-  CHECK(res.total == 0.0, "blank packs → total 0");
+  CHECK(countSym(res.board, SymId::CL) == 0, "default: no collector");
+  CHECK(countSym(res.board, SymId::CN) == 0, "default: no coins");
+  CHECK(countSym(res.board, SymId::EM) == 0, "scaffold fills all EM cells");
+  // Board is pays/wild only — may or may not win this single spin.
+  for (int c = 0; c < COLS; ++c)
+    for (int r = 0; r < ROWS; ++r) {
+      const SymId s = res.board[static_cast<size_t>(c)][static_cast<size_t>(r)].sym;
+      CHECK(isPaySym(s) || isWild(s), "default board is pays/wild only");
+    }
+}
+
+static void test_play_base_round_nonzero_line_wins() {
+  Rng rng(1);
+  Config cfg = Config::defaults();
+  Stats st{};
+  double won = 0.0;
+  for (int i = 0; i < 3000; ++i) {
+    RoundResult res = playBaseRound(rng, cfg, st);
+    won += res.lineWin;
+  }
+  CHECK(won > 0.0, "scaffold fill → some line wins over 3000 spins");
+  CHECK(st.baseWon > 0.0, "stats baseWon accumulates");
+}
+
+// -----------------------------------------------------------------------------
+// Base board-gen flow
+// -----------------------------------------------------------------------------
+
+static Config boardGenTestCfg() {
+  Config cfg = Config::defaults();
+  cfg.pCollectorLand = 1.0;
+  cfg.coinCountW = {{0, 0, 0, 1.0, 0, 0, 0}}; // always 3 coins
+  cfg.coinValueMin = 1;
+  cfg.coinValueMax = 100;
+  return cfg;
+}
+
+static void test_gen_base_board_order_and_counts() {
+  Rng rng(42);
+  Config cfg = boardGenTestCfg();
+  const BoardGenResult gen = genBaseBoard(rng, cfg);
+
+  CHECK(gen.collectorLanded, "pCollectorLand=1 → collector landed");
+  CHECK(countSym(gen.board, SymId::CL) == 1, "exactly one collector");
+  CHECK(gen.collectorCol >= 0 && gen.collectorRow >= 0, "collector position set");
+  CHECK(gen.board[static_cast<size_t>(gen.collectorCol)]
+                 [static_cast<size_t>(gen.collectorRow)].sym == SymId::CL,
+        "collector cell is CL");
+
+  CHECK(gen.coinCountRolled == 3, "coinCountW forces 3");
+  CHECK(gen.coinsPlaced == 3, "placed 3 coins");
+  CHECK(countSym(gen.board, SymId::CN) == 3, "board has 3 CN");
+
+  // Collector cell not overwritten by a coin
+  CHECK(!isCoin(gen.board[static_cast<size_t>(gen.collectorCol)]
+                         [static_cast<size_t>(gen.collectorRow)].sym),
+        "coins do not overwrite collector");
+
+  // Empty REELSETS weights → scaffold fills remaining (no EM left)
+  CHECK(countSym(gen.board, SymId::EM) == 0, "scaffold fills remaining cells");
+  CHECK(countSym(gen.board, SymId::CL) + countSym(gen.board, SymId::CN) == 4,
+        "collector + coins preserved after fill");
+}
+
+static void test_gen_base_board_coin_values() {
+  Rng rng(99);
+  Config cfg = boardGenTestCfg();
+  cfg.coinCountW = {{0, 0, 0, 0, 0, 0, 1.0}}; // always 6 coins
+  const BoardGenResult gen = genBaseBoard(rng, cfg);
+  CHECK(gen.coinsPlaced == 6, "6 coins placed");
+  CHECK(countSym(gen.board, SymId::CL) == 1, "collector + 6 coins");
+  for (int c = 0; c < COLS; ++c) {
+    for (int r = 0; r < ROWS; ++r) {
+      const Cell& cell = gen.board[static_cast<size_t>(c)][static_cast<size_t>(r)];
+      if (!isCoin(cell.sym)) continue;
+      CHECK(cell.coinValue >= 1.0 && cell.coinValue <= 100.0,
+            "coin cash value in [1,100]");
+      CHECK(cell.coinValue == static_cast<double>(static_cast<int>(cell.coinValue)),
+            "coin cash value is integer");
+    }
+  }
+}
+
+static void test_gen_base_board_no_collector() {
+  Rng rng(3);
+  Config cfg = Config::defaults();
+  cfg.pCollectorLand = 0.0;
+  cfg.coinCountW = {{0, 0, 1.0, 0, 0, 0, 0}}; // always 2 coins
+  const BoardGenResult gen = genBaseBoard(rng, cfg);
+  CHECK(!gen.collectorLanded, "no collector");
+  CHECK(countSym(gen.board, SymId::CL) == 0, "zero CL");
+  CHECK(gen.coinsPlaced == 2 && countSym(gen.board, SymId::CN) == 2, "2 coins");
+}
+
+static void test_gen_base_board_coins_skip_collector_cells() {
+  // Force collector + 6 coins on 15-cell board → 1 CL + 6 CN + 8 scaffold pays
+  Rng rng(11);
+  Config cfg = boardGenTestCfg();
+  cfg.coinCountW = {{0, 0, 0, 0, 0, 0, 1.0}};
+  const BoardGenResult gen = genBaseBoard(rng, cfg);
+  CHECK(countSym(gen.board, SymId::CL) == 1, "one collector");
+  CHECK(countSym(gen.board, SymId::CN) == 6, "six coins");
+  int feature = 0;
+  for (int c = 0; c < COLS; ++c)
+    for (int r = 0; r < ROWS; ++r) {
+      const SymId s = gen.board[static_cast<size_t>(c)][static_cast<size_t>(r)].sym;
+      if (s == SymId::CL || s == SymId::CN) ++feature;
+      else CHECK(isPaySym(s) || isWild(s), "remaining cells are scaffold pays/wild");
+    }
+  CHECK(feature == 7, "collector + coins occupy 7 cells");
+  CHECK(countSym(gen.board, SymId::EM) == 0, "no EM after scaffold fill");
+}
+
+static void test_pick_normal_from_local_reelset() {
+  // Local reelset for unit test only — does not edit REELSETS() weight tables.
+  Reelset rs;
+  rs.id = "TestPay";
+  for (int c = 0; c < COLS; ++c) {
+    rs.w[static_cast<size_t>(ReelDraw::L5)][static_cast<size_t>(c)] = 1.0;
+    rs.w[static_cast<size_t>(ReelDraw::CN)][static_cast<size_t>(c)] = 100.0; // ignored
+    rs.w[static_cast<size_t>(ReelDraw::CL)][static_cast<size_t>(c)] = 100.0; // ignored
+  }
+  Rng rng(5);
+  for (int i = 0; i < 20; ++i) {
+    const SymId s = pickNormalFromReel(rng, rs, 0);
+    CHECK(s == SymId::L5, "normalsOnly skips CN/CL weights");
+  }
+  const SymId any = pickFromReel(rng, rs, 0, /*normalsOnly=*/false);
+  CHECK(isCoin(any) || isCollector(any) || any == SymId::L5,
+        "full pick can see feature weights on local set");
+}
+
+static void test_scaffold_normal_fallback() {
+  Rng rng(2);
+  Reelset empty = makeEmptyReelset("EmptyLocal");
+  for (int i = 0; i < 40; ++i) {
+    const SymId s = pickNormalFromReel(rng, empty, i % COLS);
+    CHECK(isPaySym(s) || isWild(s), "empty reel → scaffold pay/wild");
+    CHECK(s != SymId::EM, "scaffold never returns EM");
+  }
+  CHECK(pickFromReel(rng, empty, 0, /*normalsOnly=*/false) == SymId::EM,
+        "full pick on empty column still EM");
+}
+
+static void test_gen_base_board_fill_with_injected_pack() {
+  // Prove step 6 fills EM when a pack points at a local-weight reelset id that
+  // exists in REELSETS — still without editing those shared tables' zeros.
+  // With empty Main1, fill stays EM; we instead call fillRemainingNormals after
+  // manually placing pays via pickNormalFromReel on a local set.
+  Rng rng(8);
+  Board g = blankBoard(SymId::EM);
+  g[0][0].sym = SymId::CL;
+  g[1][0].sym = SymId::CN;
+  g[1][0].coinValue = 50;
+  Reelset rs;
+  rs.id = "local";
+  for (int c = 0; c < COLS; ++c)
+    rs.w[static_cast<size_t>(ReelDraw::H2)][static_cast<size_t>(c)] = 1.0;
+  for (int c = 0; c < COLS; ++c)
+    for (int r = 0; r < ROWS; ++r) {
+      Cell& cell = g[static_cast<size_t>(c)][static_cast<size_t>(r)];
+      if (cell.sym != SymId::EM) continue;
+      cell.sym = pickNormalFromReel(rng, rs, c);
+    }
+  CHECK(countSym(g, SymId::CL) == 1, "collector preserved through fill");
+  CHECK(countSym(g, SymId::CN) == 1, "coin preserved through fill");
+  CHECK(countSym(g, SymId::H2) == COLS * ROWS - 2, "EM filled with H2");
+  CHECK(countSym(g, SymId::EM) == 0, "no EM left");
 }
 
 int main() {
@@ -323,7 +496,15 @@ int main() {
   test_boost_random_coin();
   test_tower_helpers();
   test_cashfall_stub_zero();
-  test_play_base_round_stub();
+  test_play_base_round_default_knobs();
+  test_play_base_round_nonzero_line_wins();
+  test_gen_base_board_order_and_counts();
+  test_gen_base_board_coin_values();
+  test_gen_base_board_no_collector();
+  test_gen_base_board_coins_skip_collector_cells();
+  test_pick_normal_from_local_reelset();
+  test_scaffold_normal_fallback();
+  test_gen_base_board_fill_with_injected_pack();
 
   std::printf("Bamboo Tower sanity: %d passed, %d failed\n", g_passed, g_failed);
   return g_failed ? 1 : 0;

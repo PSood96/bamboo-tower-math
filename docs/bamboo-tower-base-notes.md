@@ -45,6 +45,17 @@ Weight pick tables are **empty** in the foundation (preference: no weight edits 
 5. **Coin Respin** — open cells use respin pool; 3 respins reset on coin/mult; armed collectors sweep held total at end; full board → double (+ collectors).
 6. **Cash-Fall** — carry held into same-reel towers; per-reel 3 spins; COLL/REPL/HEART/MULT; leftover tower coins forfeited when all reels dead.
 
+## Base board-gen order
+
+1. Empty board  
+2. Roll collector via `Config::pCollectorLand` (not a reel weight table)  
+3. Place one collector on a random empty cell  
+4. Roll coin count 0–6 via `Config::coinCountW`  
+5. Place coins on empty cells only; cash value integer `[coinValueMin, coinValueMax]` (default 1–100)  
+6. Fill remaining EM with **pays + wild** from reelsets (`pickNormalFromReel`)
+
+Defaults: `pCollectorLand=0`, all coin-count mass on 0 → no features until knobs are set. Empty `REELSETS()` weights use **`pickScaffoldNormal`** (proto BASE_POOL pay+wild ratios, outside weight tables) so main-mode sims produce line wins before packs are authored.
+
 ## Implemented vs stubbed
 
 | Piece | Status |
@@ -52,7 +63,9 @@ Weight pick tables are **empty** in the foundation (preference: no weight edits 
 | types / RNG / config shape / CLI / stats CSV | Ported |
 | 30 paylines + line eval + proto paytable | Implemented |
 | Reelset registration / odd-token hygiene | Implemented (empty packs) |
-| Board gen with live weights | Stub (empty → EM) |
+| Base board gen (collector → coins → normal fill) | **Implemented** (knobs + scaffold fill) |
+| Scaffold normal fill (`pickScaffoldNormal`) | **Implemented** — not a REELSETS weight table |
+| Reel weight packs | Stub (zeros — do not edit unless asked) |
 | Coin Respin loop | Stub |
 | Cash-Fall step loop | Stub (`playCashFall` → 0) |
 

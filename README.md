@@ -2,7 +2,7 @@
 
 Coin Collector · Cash-Fall Towers math pack: modular C++ simulator (wild-descent layout), HTML proto reference, and design notes.
 
-Foundation stub — weight packs empty until authored; line eval + harness are live.
+Weight packs empty until authored; normal-cell fill uses a **scaffold** pay+wild pool (not a REELSETS weight table) so main-mode sims produce non-zero line RTP. Board-gen (collector → coins → fill) + line eval + harness are live; Coin Respin / Cash-Fall still stubbed.
 
 ## Layout
 

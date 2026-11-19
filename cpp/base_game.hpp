@@ -1,17 +1,18 @@
 #pragma once
 
 /**
- * Bamboo Tower base game — line eval + Coin Respin scaffolding.
+ * Bamboo Tower base game — board gen + line eval + Coin Respin scaffolding.
  *
- * Proto rules (cashfall):
- *   - 5×3 · 30 lines · wild substitutes for pays only
- *   - Feature symbols (CN/CL/RP/MU/HT/BL) break line runs
- *   - Coins lock when a Collector lands (<6 held) → Coin Respin
- *   - 6+ held coins on a spin → Cash-Fall Bonus (collector discarded)
- *   - Ordinary spin without collector: coins do not carry
+ * Base board-gen order (user-specified):
+ *   1. Empty board
+ *   2. Roll collector land (Config::pCollectorLand — not a reel weight table)
+ *   3. If yes, place one collector on a random empty cell
+ *   4. Roll coin count 0..6 (Config::coinCountW)
+ *   5. Place that many coins on empty cells; cash value int [coinValueMin, coinValueMax]
+ *   6. Fill remaining EM cells with normal symbols (pays + wild) from reelsets
  *
- * Board gen / respin loop are stubbed until weight packs are authored.
- * `evaluateLines` is implemented and matches the proto.
+ * Coins never overwrite the collector. With empty reel packs, step 6 leaves EM
+ * (preference: no weight-table edits). Coin Respin / Cash-Fall loops still stubbed.
  */
 
 #include "config.hpp"
@@ -19,6 +20,7 @@
 #include "stats.hpp"
 #include "types.hpp"
 
+#include <utility>
 #include <vector>
 
 namespace bambootower {
@@ -26,6 +28,15 @@ namespace bambootower {
 struct LineEvalResult {
   double totalX = 0.0; // × total bet
   std::vector<LineWin> wins;
+};
+
+struct BoardGenResult {
+  Board board{};
+  bool collectorLanded = false;
+  int collectorCol = -1;
+  int collectorRow = -1;
+  int coinCountRolled = 0;  // requested before clamp to free cells
+  int coinsPlaced = 0;
 };
 
 /**
@@ -92,9 +103,41 @@ inline int countSym(const Board& g, SymId id) {
   return n;
 }
 
+/** Empty (EM) cell coordinates — collector/coin placement targets. */
+inline std::vector<std::pair<int, int>> emptyCells(const Board& g) {
+  std::vector<std::pair<int, int>> out;
+  out.reserve(static_cast<size_t>(COLS * ROWS));
+  for (int c = 0; c < COLS; ++c)
+    for (int r = 0; r < ROWS; ++r)
+      if (g[static_cast<size_t>(c)][static_cast<size_t>(r)].sym == SymId::EM)
+        out.emplace_back(c, r);
+  return out;
+}
+
 /**
- * Fill open cells from the active reelset. Held cells (cell.held) are skipped.
- * With blank packs this fills EM — foundation stub for later board gen.
+ * Fill remaining EM cells with pays + wild only.
+ * Uses reelset column weights when present; otherwise scaffold pool
+ * (`pickScaffoldNormal`) — does not edit REELSETS() weight tables.
+ * Skips held cells.
+ */
+inline void fillRemainingNormals(Board& g, Rng& rng, const Config& cfg) {
+  const Reelset& rs = pickReelset(rng, cfg.pack);
+  for (int c = 0; c < COLS; ++c) {
+    for (int r = 0; r < ROWS; ++r) {
+      Cell& cell = g[static_cast<size_t>(c)][static_cast<size_t>(r)];
+      if (cell.held) continue;
+      if (cell.sym != SymId::EM) continue;
+      cell.sym = pickNormalFromReel(rng, rs, c);
+      cell.coinValue = 0.0;
+      cell.multHits = 0;
+      cell.rolledMult = 0;
+    }
+  }
+}
+
+/**
+ * Legacy open-cell fill (all reel draws). Prefer genBaseBoard for base spins.
+ * Held cells skipped. Empty full-draw columns stay EM (scaffold is normals-only).
  */
 inline void fillOpenCells(Board& g, Rng& rng, const Config& cfg) {
   const Reelset& rs = pickReelset(rng, cfg.pack);
@@ -113,6 +156,64 @@ inline void fillOpenCells(Board& g, Rng& rng, const Config& cfg) {
 }
 
 /**
+ * Base board generation — ordered flow.
+ * Driven by Config knobs + reelsets; does not edit weight tables.
+ */
+inline BoardGenResult genBaseBoard(Rng& rng, const Config& cfg) {
+  BoardGenResult out;
+
+  // 1. Empty board
+  out.board = blankBoard(SymId::EM);
+
+  // 2–3. Collector land?
+  out.collectorLanded = rng.chance(cfg.pCollectorLand);
+  if (out.collectorLanded) {
+    auto free = emptyCells(out.board);
+    if (!free.empty()) {
+      const auto& pos = free[static_cast<size_t>(rng.nextInt(static_cast<int>(free.size())))];
+      out.collectorCol = pos.first;
+      out.collectorRow = pos.second;
+      Cell& cell = out.board[static_cast<size_t>(pos.first)][static_cast<size_t>(pos.second)];
+      cell.sym = SymId::CL;
+      cell.coinValue = 0.0;
+      cell.multHits = 0;
+      cell.rolledMult = 0;
+      cell.held = false;
+    } else {
+      out.collectorLanded = false;
+    }
+  }
+
+  // 4. Coin count 0..6 (clamp to remaining empty cells)
+  out.coinCountRolled = pickCoinCount(rng, cfg.coinCountW);
+  if (out.coinCountRolled < 0) out.coinCountRolled = 0;
+  if (out.coinCountRolled > 6) out.coinCountRolled = 6;
+
+  // 5. Place coins on empty cells only (never overwrites collector)
+  auto free = emptyCells(out.board);
+  int toPlace = out.coinCountRolled;
+  if (toPlace > static_cast<int>(free.size())) toPlace = static_cast<int>(free.size());
+  rng.shuffle(free);
+  for (int i = 0; i < toPlace; ++i) {
+    const int c = free[static_cast<size_t>(i)].first;
+    const int r = free[static_cast<size_t>(i)].second;
+    Cell& cell = out.board[static_cast<size_t>(c)][static_cast<size_t>(r)];
+    cell.sym = SymId::CN;
+    cell.coinValue = static_cast<double>(
+        pickBoardCoinCashValue(rng, cfg.coinValueMin, cfg.coinValueMax));
+    cell.multHits = 0;
+    cell.rolledMult = 0;
+    cell.held = false;
+    ++out.coinsPlaced;
+  }
+
+  // 6. Fill remaining with normal symbols (reelset or scaffold fallback)
+  fillRemainingNormals(out.board, rng, cfg);
+
+  return out;
+}
+
+/**
  * Boost one random eligible coin (hits < maxMultHits). Returns false if none.
  * Stub helper for Coin Respin / Cash-Fall multiplier resolution.
  */
@@ -122,7 +223,6 @@ inline bool boostRandomCoin(Rng& rng, std::vector<Coin*>& coins, int maxHits) {
     if (c && c->hits < maxHits) eligible.push_back(c);
   if (eligible.empty()) return false;
   Coin* pick = rng.pick(eligible);
-  // Caller supplies the rolled multiplier separately when wiring the loop.
   (void)pick;
   return true;
 }
@@ -139,20 +239,16 @@ inline bool boostRandomCoin(Rng& rng, std::vector<Coin*>& coins, int maxHits, in
 }
 
 /**
- * One paid base round — STUB.
- * Until reel weights are authored, board stays empty → line/feature wins 0.
- * Shape matches wild-descent playBaseRound call sites for later fill-in:
- *   1. gen board (main pack)
- *   2. line eval
- *   3. held coins / collector → Coin Respin or 6+ → Cash-Fall
+ * One paid base round.
+ * Board gen is live; Coin Respin / Cash-Fall feature loops still stubbed.
  */
 inline RoundResult playBaseRound(Rng& rng, const Config& cfg, Stats& st) {
   RoundResult res;
-  Board g = blankBoard(SymId::EM);
-  fillOpenCells(g, rng, cfg);
-  res.board = g;
+  const BoardGenResult gen = genBaseBoard(rng, cfg);
+  res.board = gen.board;
+  res.heldAtEnd = gen.coinsPlaced; // provisional until hold/respin wiring
 
-  const LineEvalResult lines = evaluateLines(g, cfg);
+  const LineEvalResult lines = evaluateLines(gen.board, cfg);
   res.lineWin = round2(lines.totalX * cfg.bet);
   st.baseWon = round2(st.baseWon + res.lineWin);
 

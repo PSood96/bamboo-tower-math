@@ -114,20 +114,56 @@ inline const char* reelDrawName(ReelDraw d) {
 }
 
 /**
- * Weighted draw from one reel column. Empty / all-zero → EM (no land).
- * Foundation stub: with blank packs this always returns EM.
+ * Scaffold pay+wild fill pool (proto BASE_POOL ratios, features stripped).
+ * NOT stored in REELSETS() — preference: do not edit weight tables.
+ * Used when the active reelset column has no positive normal weights so
+ * main-mode sims can still produce line wins before packs are authored.
  */
-inline SymId pickFromReel(Rng& rng, const Reelset& rs, int col) {
+inline SymId pickScaffoldNormal(Rng& rng) {
+  static const std::vector<std::pair<ReelDraw, double>> items = {
+    {ReelDraw::H1, 32.0},  // FIRE7
+    {ReelDraw::H2, 63.0},  // BELL
+    {ReelDraw::H3, 63.0},  // CHR
+    {ReelDraw::L1, 95.0},  // A
+    {ReelDraw::L2, 127.0}, // K
+    {ReelDraw::L3, 127.0}, // Q
+    {ReelDraw::L4, 158.0}, // J
+    {ReelDraw::L5, 158.0}, // 10
+    {ReelDraw::WW, 63.0},  // WILD
+  };
+  return reelDrawToSym(rng.pickWeighted(items));
+}
+
+/**
+ * Weighted draw from one reel column.
+ * normalsOnly + empty column → scaffold pay/wild pool (not EM).
+ * Full draw + empty column → EM (no invented feature lands from strips).
+ */
+inline SymId pickFromReel(Rng& rng, const Reelset& rs, int col,
+                          bool normalsOnly = false) {
   if (col < 0) col = 0;
   if (col >= COLS) col = COLS - 1;
   std::vector<std::pair<ReelDraw, double>> items;
   items.reserve(static_cast<size_t>(kReelDrawCount));
   for (int i = 0; i < kReelDrawCount; ++i) {
+    const auto d = static_cast<ReelDraw>(i);
+    if (normalsOnly) {
+      // Base fill step: pays + wild only (CN/CL placed procedurally).
+      if (!(d <= ReelDraw::L5 || d == ReelDraw::WW)) continue;
+    }
     double w = rs.w[static_cast<size_t>(i)][static_cast<size_t>(col)];
-    if (w > 0.0) items.emplace_back(static_cast<ReelDraw>(i), w);
+    if (w > 0.0) items.emplace_back(d, w);
   }
-  if (items.empty()) return SymId::EM;
+  if (items.empty()) {
+    if (normalsOnly) return pickScaffoldNormal(rng);
+    return SymId::EM;
+  }
   return reelDrawToSym(rng.pickWeighted(items));
+}
+
+/** Pay + wild draw for remaining-cell fill after collector/coins. */
+inline SymId pickNormalFromReel(Rng& rng, const Reelset& rs, int col) {
+  return pickFromReel(rng, rs, col, /*normalsOnly=*/true);
 }
 
 inline const Reelset& pickReelset(Rng& rng, const ModeWeightPack& pack) {
@@ -156,8 +192,38 @@ inline double pickCoinValue(Rng& rng) {
   return rng.pick(COIN_VALUES());
 }
 
+/**
+ * Base board-gen cash value (user placeholder): uniform integer in [min, max].
+ * Separate from proto COIN_VALUES table — not a reel weight table.
+ */
+inline int pickBoardCoinCashValue(Rng& rng, int minV, int maxV) {
+  if (maxV < minV) {
+    const int t = minV;
+    minV = maxV;
+    maxV = t;
+  }
+  if (minV == maxV) return minV;
+  return minV + rng.nextInt(maxV - minV + 1);
+}
+
 inline int pickMultValue(Rng& rng) {
   return rng.pick(MULT_VALUES());
+}
+
+/** Default coin-count weights for counts 0..6 — all mass on 0 until authored. */
+inline std::array<double, 7> defaultCoinCountW() {
+  return {{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+}
+
+/**
+ * Pick coin land count in 0..6 from config weights.
+ * Empty / all-zero → 0 (safe placeholder).
+ */
+inline int pickCoinCount(Rng& rng, const std::array<double, 7>& weights) {
+  std::vector<double> w(weights.begin(), weights.end());
+  const int idx = rng.weightedIndex(w);
+  if (idx < 0) return 0;
+  return idx; // index == count
 }
 
 /**
@@ -174,14 +240,14 @@ inline double paytableTotalBet(SymId sym, int oak) {
     return a3;
   };
   switch (sym) {
-    case SymId::H1: return row(9.39, 2.35, 0.63); // FIRE7
-    case SymId::H2: return row(4.69, 1.25, 0.39); // BELL
-    case SymId::H3: return row(3.13, 0.78, 0.31); // CHR
-    case SymId::L1: return row(1.56, 0.47, 0.23); // A
-    case SymId::L2: return row(1.25, 0.39, 0.19); // K
-    case SymId::L3: return row(0.94, 0.31, 0.16); // Q
-    case SymId::L4: return row(0.78, 0.28, 0.13); // J
-    case SymId::L5: return row(0.63, 0.23, 0.09); // 10
+    case SymId::H1: return row(10.0, 5.0, 3.0); // FIRE7
+    case SymId::H2: return row(8.0, 4.0, 2.0); // BELL
+    case SymId::H3: return row(6.0, 3.0, 1.5); // CHR
+    case SymId::L1: return row(3.0, 2.0, 1.0); // A
+    case SymId::L2: return row(3.0, 2.0, 1.0); // K
+    case SymId::L3: return row(2.0, 1.0, 0.5); // Q
+    case SymId::L4: return row(2.0, 1.0, 0.5); // J
+    case SymId::L5: return row(2.0, 1.0, 0.5); // 10
     default: return 0.0;
   }
 }
@@ -246,11 +312,24 @@ struct Config {
   int maxMultHits = MAX_MULT_HITS;
   ModeWeightPack pack{};
 
+  /**
+   * Base board-gen knobs (procedural — NOT reel weight tables).
+   * Defaults leave collector/coins off so empty reel packs stay RTP-0 until
+   * knobs / packs are authored. Override in tests or when tuning.
+   */
+  double pCollectorLand = 0.0;                 // P(place one collector)
+  std::array<double, 7> coinCountW = defaultCoinCountW(); // weights for 0..6
+  int coinValueMin = 1;                        // inclusive cash value
+  int coinValueMax = 100;
+
   static Config defaults() { return forMode(SimMode::Main); }
 
   static Config forMode(SimMode mode) {
     Config c;
     c.pack = weightPackForMode(mode);
+    // ModeWeightPack.pCollector is reserved for later pack wiring; board gen
+    // uses Config::pCollectorLand so we do not invent reel weights.
+    (void)c.pack.pCollector;
     return c;
   }
 };
